@@ -15,28 +15,29 @@
 # =========================================================
 
 import warnings
-warnings.filterwarnings("ignore")
-
-from pathlib import Path
 
 import math
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-
+import phik 
 from IPython.display import display, Markdown
 
-from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
-
-# Базовые настройки отображения для ноутбука
-pd.set_option("display.max_columns", None) # сколько колонок DataFrame pandas показывает при выводе
-pd.set_option("display.max_rows", 200) # максимальным числом строк, которое pandas показывает при выводе DataFrame
-sns.set_theme(style="whitegrid") # белый фон с сеткой (grid) по осям
+# ---------------------------------------------------------
+# НАСТРОЙКИ НОУТБУКА
+# ---------------------------------------------------------
+def _configure_notebook():
+    """Настраивает вывод таблиц и стиль графиков."""
+    pd.set_option("display.max_columns", None) # сколько колонок DataFrame pandas показывает при выводе
+    pd.set_option("display.max_rows", 200) # максимальным числом строк, которое pandas показывает при выводе DataFrame
+    sns.set_theme(style="whitegrid") # белый фон с сеткой (grid) по осям
+    warnings.filterwarnings("ignore") # отключение предупреждений, чтобы не засорять вывод в Jupyter
 
 # ---------------------------------------------------------
 # СЛУЖЕБНЫЕ ФУНКЦИИ
 # ---------------------------------------------------------
+
 def _md(text):
     # Красивый текстовый заголовок внутри Jupyter
     display(Markdown(text))
@@ -62,11 +63,53 @@ def _get_types(df, cat_threshold=12):
     return num_cols, cat_cols, dt_cols, numeric_as_cat
 
 
-def exclude_id_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Возвращает DataFrame без столбцов, содержащих 'id' в названии (без учёта регистра)."""
-    pattern = r'(?i)id'  # (?i) — ignore case
-    cols_to_drop = df.columns[df.columns.str.contains(pattern, regex=True)]
-    return df.drop(columns=cols_to_drop, errors='ignore')
+def _exclude_id_columns(
+    df: pd.DataFrame,
+    exclude_cols=None,
+    *,
+    target=None,
+) -> pd.DataFrame:
+    """
+    Возвращает копию DataFrame без явно указанных столбцов.
+
+    Защита:
+    - проверяет наличие target;
+    - запрещает исключать target;
+    - сообщает об опечатках в названиях столбцов;
+    - не изменяет исходный DataFrame.
+    """
+    if not df.columns.is_unique:
+        raise ValueError("Названия столбцов должны быть уникальными.")
+
+    if target is not None and target not in df.columns:
+        raise ValueError(
+            f"Целевая переменная {target!r} отсутствует в DataFrame."
+        )
+
+    if exclude_cols is None:
+        exclude_cols = []
+    elif isinstance(exclude_cols, str):
+        exclude_cols = [exclude_cols]
+    else:
+        exclude_cols = list(exclude_cols)
+
+    if target is not None and target in exclude_cols:
+        raise ValueError(
+            f"Нельзя исключать целевую переменную {target!r}. "
+            "Уберите её из exclude_cols."
+        )
+
+    unknown_cols = [
+        col for col in exclude_cols
+        if col not in df.columns
+    ]
+
+    if unknown_cols:
+        raise ValueError(
+            f"В exclude_cols указаны отсутствующие столбцы: {unknown_cols}"
+        )
+
+    return df.drop(columns=exclude_cols).copy()
 
 
 def _summary_table(df):
@@ -268,7 +311,6 @@ def _plot_phik_corr(df):
     """
     Матрица PhiK-корреляций для любых типов признаков.
     """
-    from phik import phik_matrix
 
     df_phik = df.copy()
     timedelta_cols = df_phik.select_dtypes(include=["timedelta64[ns]"]).columns
@@ -374,9 +416,8 @@ def _target_eda(df, target, task, num_cols, cat_cols):
         print("Для анализа target укажите task='classification' или task='regression'.")
 
 
-def target_relations(df,
+def _target_relations(df,
     target,
-    task=None,
     top_n=15,
     corr_method="pearson",
     use_phik=True,
@@ -397,7 +438,6 @@ def target_relations(df,
     Параметры:
     - df: pandas DataFrame
     - target: имя целевой колонки
-    - task: 'classification' | 'regression' | None
     - top_n: сколько признаков показывать
     - corr_method: 'pearson' или 'spearman' для числового блока
     - use_phik: считать ли PhiK
@@ -502,12 +542,20 @@ def target_relations(df,
 # ---------------------------------------------------------
 # ОСНОВНЫЕ ФУНКЦИИ
 # ---------------------------------------------------------
-def quick_eda(df, cat_threshold=12):
+def quick_eda(df, cat_threshold=12, exclude_cols=None, target=None):
     """
     БЫСТРЫЙ EDA:
     Используется для первого знакомства с датасетом.
     Даёт компактную сводку без перегруза графиками.
     """
+    df_copy = _exclude_id_columns(
+            df,
+            exclude_cols=exclude_cols,
+            target=target,
+        ) # иключение колонок с 'id
+    
+    _configure_notebook() # настройка ноутбука
+
     _md("#### Quick EDA")
 
     print("Размер датасета:", df.shape)
@@ -521,7 +569,6 @@ def quick_eda(df, cat_threshold=12):
 
     print("\nЧисло дубликатов:", df.duplicated().sum())
     
-    df_copy = exclude_id_columns(df)
     num_cols, cat_cols, dt_cols, numeric_as_cat = _get_types(df_copy, cat_threshold=cat_threshold)
 
     print("\nТипы признаков:")
@@ -556,7 +603,8 @@ def full_eda(
     cat_threshold=12,
     max_numeric_plots=10,
     max_categorical_plots=6,
-    top_n_categories=12
+    top_n_categories=12,
+    exclude_cols=None
 ):
     """
     ПОЛНЫЙ EDA:
@@ -569,6 +617,13 @@ def full_eda(
     - строит корреляции
     - при наличии target делает его отдельный анализ
     """
+    df_copy = _exclude_id_columns(
+        df,
+        exclude_cols=exclude_cols,
+        target=target,
+    ) # иключение колонок с 'id'
+    
+    _configure_notebook() # настройка ноутбука
     _md("#### Full EDA")
 
     print("Размер датасета:", df.shape)
@@ -581,8 +636,6 @@ def full_eda(
     display(_summary_table(df))
 
     print("Число дубликатов:", df.duplicated().sum())
-
-    df_copy = exclude_id_columns(df)
     
     constant_cols = [col for col in df_copy.columns if df_copy[col].nunique(dropna=False) <= 1]
     print("Константные колонки:", constant_cols if constant_cols else "Нет")
@@ -662,4 +715,4 @@ def full_eda(
     if target is not None:
         _md("##### Target")
         _target_eda(df_copy, target, task, num_cols, cat_cols)
-        target_relations(df_copy, target, task="regression", corr_method="pearson", use_phik=True)
+        _target_relations(df_copy, target, corr_method="pearson", use_phik=True)
